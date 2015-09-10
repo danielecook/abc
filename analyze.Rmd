@@ -1,0 +1,61 @@
+---
+title: "Tanaka"
+output: html_document
+---
+
+```{r}
+library(dplyr)
+library(readr)
+library(tidyr)
+library(stringr)
+library(reutils)
+library(XML)
+
+setwd("/Users/dancook/Documents/git/tanaka/")
+
+tblastn <- function(fasta, db = "reference/all_bacteria") 
+{
+  query_name <- paste0("blast_results/", fasta, ".blast.txt")
+  comm <- paste("export BLASTDB=/usr/local/share/blast; tblastn -query ", fasta,
+                "-db", db, 
+                "-task tblastn",
+                "-max_target_seqs 20000",
+                "-outfmt '6  sscinames scomnames staxids qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore'",
+                ">",
+                query_name)
+  print(comm)
+  system(comm)
+  
+  r <- read_tsv( query_name, col_names = c("Species",
+                                           "Name",
+                                           "TaxID",
+                                           "QueryID",
+                                           "SubjectID",
+                                           "Percent_Identity",
+                                           "Alignment_Length",
+                                           "Mismatches",
+                                           "Gap_Openings",
+                                           "Q.Start",
+                                           "Q.End",
+                                           "S.Start",
+                                           "S.End",
+                                           "E",
+                                           "Bits") )  %>%
+    separate(SubjectID, into = c("name_drop", "gi", "ref_drop","accession"), sep = "\\|", extra = "drop", convert = T) %>%
+    dplyr::select(-name_drop, -ref_drop)
+    
+    recs <- efetch(uid=as.character(r$accession), db="nuccore", "docsum", outfile="data/accessions.txt")
+  
+    dplyr::mutate(Name = sapply(unlist(efetch(accession, db="nuccore", "docsum")['//Item[@Name="Title"]/text()']), xmlValue) ) %>%
+    dplyr::rename(POS_Start = S.Start, POS_End = S.End) %>%
+    dplyr::mutate(CHROM = str_match(Name, "chromosome ([A-Za-z0-9])")[,2]) %>%
+    dplyr::select(Species, Name, TaxID, QueryID, CHROM, POS_Start, POS_End, accession,  everything()) 
+}
+
+
+
+results <- tblastn("Sap.fasta")
+
+save(results, file = "bacteria_blast_results.Rdata")
+
+```
