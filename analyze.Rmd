@@ -11,51 +11,85 @@ library(stringr)
 library(reutils)
 library(XML)
 
-setwd("/Users/dancook/Documents/git/tanaka/")
+setwd("/Users/dancook/Dropbox/Andersenlab/LabFolders/Dan/Collaborations/abc/")
 
-tblastn <- function(fasta, db = "reference/all_bacteria") 
-{
-  query_name <- paste0("blast_results/", fasta, ".blast.txt")
-  comm <- paste("export BLASTDB=/usr/local/share/blast; tblastn -query ", fasta,
-                "-db", db, 
-                "-task tblastn",
-                "-max_target_seqs 20000",
-                "-outfmt '6  sscinames scomnames staxids qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore'",
-                ">",
-                query_name)
-  print(comm)
-  system(comm)
-  
-  r <- read_tsv( query_name, col_names = c("Species",
-                                           "Name",
-                                           "TaxID",
-                                           "QueryID",
-                                           "SubjectID",
-                                           "Percent_Identity",
-                                           "Alignment_Length",
-                                           "Mismatches",
-                                           "Gap_Openings",
-                                           "Q.Start",
-                                           "Q.End",
-                                           "S.Start",
-                                           "S.End",
-                                           "E",
-                                           "Bits") )  %>%
-    separate(SubjectID, into = c("name_drop", "gi", "ref_drop","accession"), sep = "\\|", extra = "drop", convert = T) %>%
-    dplyr::select(-name_drop, -ref_drop)
-    
-    recs <- efetch(uid=as.character(r$accession), db="nuccore", "docsum", outfile="data/accessions.txt")
-  
-    dplyr::mutate(Name = sapply(unlist(efetch(accession, db="nuccore", "docsum")['//Item[@Name="Title"]/text()']), xmlValue) ) %>%
-    dplyr::rename(POS_Start = S.Start, POS_End = S.End) %>%
-    dplyr::mutate(CHROM = str_match(Name, "chromosome ([A-Za-z0-9])")[,2]) %>%
-    dplyr::select(Species, Name, TaxID, QueryID, CHROM, POS_Start, POS_End, accession,  everything()) 
-}
+fasta <- "Sap.fasta"
+db <- "reference/all_bacteria"
+
+query_name <- paste0("blast_results/", fasta, ".blast.txt")
+comm <- paste("export BLASTDB=/usr/local/share/blast; tblastn -query ", fasta,
+              "-db", db, 
+              "-task tblastn",
+              "-max_target_seqs 20000",
+              "-outfmt '6  sscinames scomnames staxids qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore'",
+              ">",
+              query_name)
+print(comm)
+system(comm)
 
 
+results <- read_tsv( query_name, col_names = c("Species",
+                                       "Name",
+                                       "TaxID",
+                                       "QueryID",
+                                       "SubjectID",
+                                       "Percent_Identity",
+                                       "Alignment_Length",
+                                       "Mismatches",
+                                       "Gap_Openings",
+                                       "Q.Start",
+                                       "Q.End",
+                                       "S.Start",
+                                       "S.End",
+                                       "E",
+                                       "Bits") )  %>%
+separate(SubjectID, into = c("name_drop", "gi", "ref_drop","accession"), sep = "\\|", extra = "drop", convert = T) %>%
+dplyr::select(-name_drop, -ref_drop) %>%
+dplyr::mutate(CHROM = str_match(Name, "chromosome ([A-Za-z0-9])")[,2]) %>%
+dplyr::select(Species, Name, TaxID, QueryID, CHROM, S.Start, S.End, accession,  everything()) 
 
-results <- tblastn("Sap.fasta")
 
 save(results, file = "bacteria_blast_results.Rdata")
+
+trim <- function (x) gsub("^\\s+|\\s+$", "", x)
+
+
+genomes <- read_delim("reference/genomes.txt", "|", col_names = c("gi", "ref", "accession", "name")) %>%
+           select(-ref) %>%
+           mutate_each(funs(trim), everything())
+
+
+df <- results %>% ungroup() %>% 
+             left_join(genomes, by = "accession") %>%
+             filter(!is.na(QueryID)) %>%
+             mutate(Species = trim(Species)) %>%
+             group_by(accession) %>%
+             filter(any("SapA" %in% QueryID)) %>%
+             mutate(direction = ifelse(S.End > S.Start, 1, -1)) %>%
+             select(-Species, -Name, -TaxID, -gi)
+
+df2 <- filter(df, QueryID == "SapA") %>%
+           mutate(S.Start = S.Start-7000*direction, S.End = S.End+7000*direction, SapA_Start = S.Start) %>%
+           select(accession, S.Start, S.End, SapA_Start) %>%
+           rename(SapA.Start_region=S.Start, SapA.End_region=S.End) %>%
+           left_join(df, by = c("accession")) %>%
+           filter( (S.Start > SapA.Start_region & S.Start < SapA.End_region & direction == 1) | 
+               (S.Start > SapA.End_region & S.End < SapA.Start_region & direction == -1)) %>%
+           group_by(accession, SapA_Start, QueryID, S.Start, S.End) %>%
+           distinct() %>%
+           ungroup() %>%
+           group_by(accession, SapA_Start) %>%
+           mutate(SapA = sum(QueryID == "SapA"),
+                  SapB = sum(QueryID == "SapB"),
+                  SapC = sum(QueryID == "SapC"),
+                  SapD = sum(QueryID == "SapD"),
+                  SapF = sum(QueryID == "SapF"),
+                  SapZ = sum(QueryID == "SapZ"), 
+                  SapD_only = sum(QueryID == "SapD_only"),
+                  SapF_only = sum(QueryID == "SapF_only"),
+                  SapD_nbd  = sum(QueryID == "SapD_nbd"),
+                  SapF_nbd  = sum(QueryID == "SapF_nbd")) 
+
+df2$operon_id <- group_indices(df2)
 
 ```

@@ -1,3 +1,4 @@
+mkdir data
 mkdir reference
 mkdir blast_results
 curl ftp://ftp.ncbi.nlm.nih.gov/genomes/Bacteria/all.fna.tar.gz > reference/all.fa.gz
