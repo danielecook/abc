@@ -1,17 +1,26 @@
 ---
-title: "Tanaka"
-output: html_document
+title: "ABC Transporters"
+author: "Daniel Cook"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: cosmo
+    toc: yes
 ---
 
-```{r}
+#### Blast Command
+
+```{r, cache = F, echo = F}
 library(dplyr)
 library(readr)
 library(tidyr)
 library(stringr)
 library(reutils)
 library(XML)
+library(DT)
+library(GenomicRanges)
 
-setwd("/Users/dancook/Dropbox/Andersenlab/LabFolders/Dan/Collaborations/abc/")
+setwd("/Users/dancook/Dropbox/Andersenlab/LabFolders/Dan/Projects/abc/")
 
 fasta <- "Sap.fasta"
 db <- "reference/all_bacteria"
@@ -25,7 +34,10 @@ comm <- paste("export BLASTDB=/usr/local/share/blast; tblastn -query ", fasta,
               ">",
               query_name)
 print(comm)
-system(comm)
+```
+
+```{r blast_search, echo = F, cache = T}
+#system(comm)
 
 
 results <- read_tsv( query_name, col_names = c("Species",
@@ -56,29 +68,39 @@ trim <- function (x) gsub("^\\s+|\\s+$", "", x)
 
 genomes <- read_delim("reference/genomes.txt", "|", col_names = c("gi", "ref", "accession", "name")) %>%
            select(-ref) %>%
-           mutate_each(funs(trim), everything())
+           mutate_each(funs(trim), everything()) %>%
+           mutate(gi = as.integer(gi))
 
 
-df <- results %>% ungroup() %>% 
-             left_join(genomes, by = "accession") %>%
+df <- suppressWarnings(results %>% ungroup() %>% 
+             left_join(genomes, by = c("gi", "accession")) %>%
              filter(!is.na(QueryID)) %>%
              mutate(Species = trim(Species)) %>%
              group_by(accession) %>%
              filter(any("SapA" %in% QueryID)) %>%
-             mutate(direction = ifelse(S.End > S.Start, 1, -1)) %>%
-             select(-Species, -Name, -TaxID, -gi)
+             mutate(direction = ifelse(S.End > S.Start, "+", "-")) %>%
+             mutate(swap1 = ifelse(S.Start > S.End, S.End, S.Start)) %>%
+             mutate(swap2 = ifelse(S.Start > S.End, S.Start, S.End)) %>%
+             mutate(S.Start = swap1, S.End = swap2) %>%
+             select(-Species, -Name, -TaxID, -gi, -swap1, -swap2)) %>%
+             select(accession, S.Start, S.End, direction,  everything())
+
 
 df2 <- filter(df, QueryID == "SapA") %>%
-           mutate(S.Start = S.Start-7000*direction, S.End = S.End+7000*direction, SapA_Start = S.Start) %>%
+           mutate(S.Start = S.Start-7000, S.End = S.End+7000, SapA_Start = S.Start) %>%
            select(accession, S.Start, S.End, SapA_Start) %>%
-           rename(SapA.Start_region=S.Start, SapA.End_region=S.End) %>%
+           dplyr::rename(SapA.Start_region=S.Start, SapA.End_region=S.End) %>%
            left_join(df, by = c("accession")) %>%
-           filter( (S.Start > SapA.Start_region & S.Start < SapA.End_region & direction == 1) | 
-               (S.Start > SapA.End_region & S.End < SapA.Start_region & direction == -1)) %>%
+           filter( (S.Start > SapA.Start_region & S.Start < SapA.End_region) ) %>%
            group_by(accession, SapA_Start, QueryID, S.Start, S.End) %>%
            distinct() %>%
            ungroup() %>%
            group_by(accession, SapA_Start) %>%
+           filter(n() >= 3) %>%
+           separate(name, sep = ",", into = c("Species", "Contig"), remove = F, extra = "drop") %>%
+           mutate(Species = trim(str_replace(Species,"chromosome",""))) %>%
+           mutate(Species = trim(str_replace(Species,"complete genome",""))) %>%
+           group_by(accession, SapA_Start) %>%         
            mutate(SapA = sum(QueryID == "SapA"),
                   SapB = sum(QueryID == "SapB"),
                   SapC = sum(QueryID == "SapC"),
@@ -88,8 +110,85 @@ df2 <- filter(df, QueryID == "SapA") %>%
                   SapD_only = sum(QueryID == "SapD_only"),
                   SapF_only = sum(QueryID == "SapF_only"),
                   SapD_nbd  = sum(QueryID == "SapD_nbd"),
-                  SapF_nbd  = sum(QueryID == "SapF_nbd")) 
+                  SapF_nbd  = sum(QueryID == "SapF_nbd")) %>%
+           arrange(S.Start)
+
+
 
 df2$operon_id <- group_indices(df2)
+
+
+```
+
+### Distribution of ABC operons by species
+
+```{r Distribution of N Operons, echo = F}
+
+distr_abc <- select(df2, operon_id, accession, Species) %>%
+  group_by(Species) %>%
+  summarize(n_abc = n())
+
+ggplot(distr_abc, aes(x = n_abc)) +
+  geom_histogram(binwidth = 1, fill = "#FF7F50") +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 200)) +
+  scale_x_continuous(expand = c(0,0)) +
+  labs(x = "Number of ABC Operons Identified in a species", y = "Frequency") +
+  theme_bw()
+
+```
+
+__Figure__ - Number of operons identified in each species. The only filter implemented removes operons with less than 3 genes.
+
+* __Total number of species__ - `r select(distr_abc, Species) %>% nrow()`
+* __Max__ - `r max(distr_abc$n_abc)`
+* __Median__ - `r median(distr_abc$n_abc)`
+* __Mean__ - `r mean(distr_abc$n_abc)`
+* __Std Dev__ - `r sd(distr_abc$n_abc)`
+* __Min__ - `r min(distr_abc$n_abc)`
+
+
+`r datatable( distr_abc %>% arrange(desc(n_abc)), style = "bootstrap", options = list(pageLength = 10), class = 'cell-border stripe')`
+
+### Distribution of % Identity
+
+```{r Percent_Identities}
+
+
+ggplot(df2, aes(x = Percent_Identity, fill = QueryID)) +
+  geom_histogram(binwidth = 0.5) +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_continuous(expand = c(0,0), limits = c(0,100)) +
+  labs(x = "% Identity", y = "Frequency") +
+  theme_bw() +
+  facet_grid(QueryID~.)
+
+
+```
+
+### Filter Further
+
+```{r}
+
+df3 <- df2 %>% dplyr::filter(!(QueryID %in% c("SapD_only", "SapF_only", "SapD_nbd", "SapF_nbd"))) %>%
+        dplyr::arrange(QueryID) %>%
+        dplyr::mutate(gap = ifelse(row_number() != 1, lead(S.Start) - S.End, NA)) %>%
+        dplyr::select(operon_id, accession, S.Start, S.End, direction, gap, everything()) %>%
+        dplyr::filter(gap > 0 | is.na(gap)) %>%
+        dplyr::mutate(gap =  lead(S.Start) - S.End) %>%  
+        dplyr::filter(gap > 0 | is.na(gap)) %>%
+        dplyr::mutate(gap =  lead(S.Start) - S.End) %>% 
+          dplyr::filter(gap > 0 | is.na(gap)) %>%
+        dplyr::mutate(gap =  lead(S.Start) - S.End) %>% 
+          dplyr::filter(gap > 0 | is.na(gap)) %>%
+        dplyr::mutate(gap =  lead(S.Start) - S.End) %>% 
+        dplyr::group_by(operon_id) %>%
+           mutate(SapA = sum(QueryID == "SapA"),
+                  SapB = sum(QueryID == "SapB"),
+                  SapC = sum(QueryID == "SapC"),
+                  SapD = sum(QueryID == "SapD"),
+                  SapF = sum(QueryID == "SapF"),
+                  SapZ = sum(QueryID == "SapZ")) %>%
+        dplyr::filter(n() >= 3)
+ 
 
 ```
