@@ -171,7 +171,7 @@ ggplot(df2, aes(x = Percent_Identity, fill = QueryID)) +
 
 df3 <- df2 %>% dplyr::filter(!(QueryID %in% c("SapD_only", "SapF_only", "SapD_nbd", "SapF_nbd"))) %>%
         dplyr::arrange(QueryID) %>%
-        dplyr::mutate(gap = ifelse(row_number() != 1, lead(S.Start) - S.End, NA)) %>%
+        dplyr::mutate(gap = dplyr::lead(S.Start) - S.End) %>%
         dplyr::select(operon_id, accession, S.Start, S.End, direction, gap, everything()) %>%
         dplyr::filter(gap > 0 | is.na(gap)) %>%
         dplyr::mutate(gap =  lead(S.Start) - S.End) %>%  
@@ -190,5 +190,7 @@ df3 <- df2 %>% dplyr::filter(!(QueryID %in% c("SapD_only", "SapF_only", "SapD_nb
                   SapZ = sum(QueryID == "SapZ")) %>%
         dplyr::filter(n() >= 3)
  
+freq <- df3 %>% dplyr::ungroup() %>% group_by(SapA, SapB, SapC, SapD, SapF, SapZ) %>%
+  summarize(n = n())
 
 ```
