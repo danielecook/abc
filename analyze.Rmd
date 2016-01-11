@@ -10,52 +10,107 @@ library(tidyr)
 library(stringr)
 library(reutils)
 library(XML)
+library(cowplot)
 
-setwd("/Users/dancook/Documents/git/tanaka/")
+setwd("/Users/dancook/Dropbox/Andersenlab/LabFolders/Dan/Collaborations/abc/")
 
-tblastn <- function(fasta, db = "reference/all_bacteria") 
-{
-  query_name <- paste0("blast_results/", fasta, ".blast.txt")
-  comm <- paste("export BLASTDB=/usr/local/share/blast; tblastn -query ", fasta,
-                "-db", db, 
-                "-task tblastn",
-                "-max_target_seqs 20000",
-                "-outfmt '6  sscinames scomnames staxids qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore'",
-                ">",
-                query_name)
-  print(comm)
-  system(comm)
+fasta <- "Sap.fasta"
+db <- "reference/all_bacteria"
+
+query_name <- paste0("blast_results/", fasta, ".blast.txt")
+comm <- paste("export BLASTDB=/usr/local/share/blast; tblastn -query ", fasta,
+              "-db", db, 
+              "-task tblastn",
+              "-max_target_seqs 20000",
+              "-outfmt '6  sscinames scomnames staxids qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore'",
+              ">",
+              query_name)
+print(comm)
+#system(comm)
+
+
+results <- read_tsv( query_name, col_names = c("Species",
+                                       "Name",
+                                       "TaxID",
+                                       "QueryID",
+                                       "SubjectID",
+                                       "Percent_Identity",
+                                       "Alignment_Length",
+                                       "Mismatches",
+                                       "Gap_Openings",
+                                       "Q.Start",
+                                       "Q.End",
+                                       "S.Start",
+                                       "S.End",
+                                       "E",
+                                       "Bits") )  %>%
+separate(SubjectID, into = c("name_drop", "gi", "ref_drop","accession"), sep = "\\|", extra = "drop", convert = T) %>%
+dplyr::select(-name_drop, -ref_drop) %>%
+dplyr::rename(POS_Start = S.Start, POS_End = S.End) %>%
+dplyr::mutate(CHROM = str_match(Name, "chromosome ([A-Za-z0-9])")[,2]) %>%
+dplyr::select(Species, Name, TaxID, QueryID, CHROM, POS_Start, POS_End, accession,  everything()) 
+
+
+load("blast_hits.RData")
+trim <- function (x) gsub("^\\s+|\\s+$", "", x)
+df <- r %>% ungroup() %>% 
+             filter(!is.na(QueryID)) %>%
+             mutate(species = trim(species)) %>%
+             group_by(species) %>%
+             filter(any("SapA" %in% QueryID)) %>%
+             mutate(direction = ifelse(S.End > S.Start, 1, -1))
+
+df2 <- filter(df, QueryID == "SapA") %>%
+           mutate(S.Start = S.Start-7000*direction, S.End = S.End+7000*direction, SapA_Start = S.Start) %>%
+           select(species, S.Start, S.End, SapA_Start) %>%
+           rename(SapA.Start_region=S.Start, SapA.End_region=S.End) %>%
+           left_join(df) %>%
+           filter( (S.Start > SapA.Start_region & S.Start < SapA.End_region & direction == 1) | 
+               (S.Start > SapA.End_region & S.End < SapA.Start_region & direction == -1)) %>%
+           group_by(species, SapA_Start, QueryID, S.Start, S.End) %>%
+           distinct() %>%
+           ungroup() %>%
+           group_by(species, SapA_Start) %>%
+           mutate(SapA = sum(QueryID == "SapA"),
+                  SapB = sum(QueryID == "SapB"),
+                  SapC = sum(QueryID == "SapC"),
+                  SapD = sum(QueryID == "SapD"),
+                  SapF = sum(QueryID == "SapF"),
+                  SapZ = sum(QueryID == "SapZ"),
+                  mean_percent = mean(Percent_Identity)) %>%
+          dplyr::ungroup() %>%
+          dplyr::arrange(desc(mean_percent)) %>%
+          dplyr::group_by(species, SapA_Start) %>%
+          dplyr::filter(SapA > 0, (SapB > 0 | SapC > 0), (SapD > 0 | SapF > 0) ) %>%
+          dplyr::mutate(gene_string = paste0("gs", SapA, SapB, SapC, SapD, SapF, SapZ))
+
+df2$operon_id <- group_indices(df2)
+
+# Draw them
+#lapply(unique(df2$species)[1:5], )
+
+lapply(1:max(df2$operon_id), function(index) {
   
-  r <- read_tsv( query_name, col_names = c("Species",
-                                           "Name",
-                                           "TaxID",
-                                           "QueryID",
-                                           "SubjectID",
-                                           "Percent_Identity",
-                                           "Alignment_Length",
-                                           "Mismatches",
-                                           "Gap_Openings",
-                                           "Q.Start",
-                                           "Q.End",
-                                           "S.Start",
-                                           "S.End",
-                                           "E",
-                                           "Bits") )  %>%
-    separate(SubjectID, into = c("name_drop", "gi", "ref_drop","accession"), sep = "\\|", extra = "drop", convert = T) %>%
-    dplyr::select(-name_drop, -ref_drop)
-    
-    recs <- efetch(uid=as.character(r$accession), db="nuccore", "docsum", outfile="data/accessions.txt")
+  x <- unique(df2$operon_id)[[index]]
   
-    dplyr::mutate(Name = sapply(unlist(efetch(accession, db="nuccore", "docsum")['//Item[@Name="Title"]/text()']), xmlValue) ) %>%
-    dplyr::rename(POS_Start = S.Start, POS_End = S.End) %>%
-    dplyr::mutate(CHROM = str_match(Name, "chromosome ([A-Za-z0-9])")[,2]) %>%
-    dplyr::select(Species, Name, TaxID, QueryID, CHROM, POS_Start, POS_End, accession,  everything()) 
-}
-
-
-
-results <- tblastn("Sap.fasta")
-
-save(results, file = "bacteria_blast_results.Rdata")
+  plot_df <- df2 %>%
+    dplyr::filter(operon_id == x) %>%
+    dplyr::mutate(row = row_number()) %>%
+    dplyr::mutate(title =  paste0(species, "(gi=", gi,"); E= ", E, sep = " "))
+  
+  ggplot(plot_df %>% dplyr::filter(operon_id == x)) +
+    geom_rect(aes(xmin = S.Start, xmax = S.End, ymin = row-1, ymax = row, color=QueryID, fill = QueryID, alpha = Percent_Identity)) +
+    geom_text(aes(x = (S.Start + ((S.End - S.Start)/2)), y = row-0.5, label = paste0(QueryID, " (", Percent_Identity, ") "))) +
+    labs(title = plot_df$title[[1]]) +
+    facet_grid(operon_id ~ ., space = "free_x", scales = "free") +
+    theme_bw() +
+    theme(axis.text.y  = element_blank(),
+          axis.title.x  = element_blank(),
+          axis.title.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          legend.position = "None")
+  
+  ggsave(paste0("plots/", sprintf("%05d", index), "_", plot_df$gene_string[[1]], "_", plot_df$accession[[1]],".svg"), height = 3, width = 10, limitsize = F )
+})
 
 ```
